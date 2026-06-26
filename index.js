@@ -156,6 +156,47 @@ async function run() {
       }
     });
 
+    // --- This route was missing, which caused the 404 on booking submission ---
+    app.post("/bookings", async (req, res) => {
+      try {
+        const booking = req.body;
+        booking.createdAt = new Date();
+        const result = await bookingsCollection.insertOne(booking);
+        res.status(201).send(result);
+      } catch (err) {
+        console.error("POST /bookings error:", err);
+        res.status(500).send({ message: "Failed to create booking" });
+      }
+    });
+
+    app.get("/bookings", async (req, res) => {
+      try {
+        const email = req.query.email;
+        if (!email) return res.status(400).send({ message: "Email parameter required" });
+        const query = { user_email: email };
+        const result = await bookingsCollection.find(query).toArray();
+        res.send(result);
+      } catch (err) {
+        console.error("GET /bookings error:", err);
+        res.status(500).send({ message: "Failed to fetch bookings" });
+      }
+    });
+
+    app.delete("/bookings/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ message: "Invalid booking id" });
+        }
+        const query = { _id: new ObjectId(id) };
+        const result = await bookingsCollection.deleteOne(query);
+        res.send(result);
+      } catch (err) {
+        console.error("DELETE /bookings/:id error:", err);
+        res.status(500).send({ message: "Failed to cancel booking" });
+      }
+    });
+
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
   } catch (error) {
     console.error("MongoDB Connection Error:", error);
