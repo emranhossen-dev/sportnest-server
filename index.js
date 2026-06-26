@@ -71,6 +71,29 @@ async function run() {
       res.status(201).send(result);
     });
 
+    app.get("/facilities", async (req, res) => {
+      const { search, type } = req.query;
+      let query = {};
+
+      if (search) {
+        query.name = { $regex: search, $options: "i" };
+      }
+
+      if (type && type !== "all") {
+        query.facility_type = { $in: [type] };
+      }
+
+      const result = await facilitiesCollection.find(query).toArray();
+      res.send(result);
+    });
+
+    app.get("/facilities/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await facilitiesCollection.findOne(query);
+      res.send(result);
+    });
+
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
   } finally {
   }
