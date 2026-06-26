@@ -63,6 +63,14 @@ async function run() {
       }).send({ success: true });
     });
 
+    app.post("/facilities", async (req, res) => {
+      const data = req.body;
+      const date = new Date();
+      data.createdAt = date;
+      const result = await facilitiesCollection.insertOne(data);
+      res.status(201).send(result);
+    });
+
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
   } finally {
   }
