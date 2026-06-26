@@ -1,27 +1,30 @@
-const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
-const express = require("express");
-const cors = require("cors");
-const cookieParser = require("cookie-parser");
-const { betterAuth } = require("better-auth");
-const { mongodbAdapter } = require("better-auth/adapters/mongodb");
-const { toNodeHandler } = require("better-auth/node");
-require("dotenv").config();
+import { MongoClient, ServerApiVersion, ObjectId } from "mongodb";
+import express from "express";
+import cors from "cors";
+import cookieParser from "cookie-parser";
+import { betterAuth } from "better-auth";
+import { mongodbAdapter } from "better-auth/adapters/mongodb";
+import { toNodeHandler } from "better-auth/node";
+import dotenv from "dotenv";
 
-const port = process.env.PORT || 5000;
+dotenv.config();
+
 const app = express();
+const port = process.env.PORT || 5000;
 
-app.use(cors({
-  origin: [
-    "http://localhost:5173",
-    "https://sportnest.emran.work"
-  ],
-  credentials: true
-}));
+/* ---------------- Middleware ---------------- */
+app.use(
+  cors({
+    origin: ["http://localhost:5173", "https://sportnest.emran.work"],
+    credentials: true,
+  })
+);
 
 app.use(cookieParser());
+app.use(express.json());
 
-const uri = process.env.MONGO_URI;
-const client = new MongoClient(uri, {
+/* ---------------- MongoDB ---------------- */
+const client = new MongoClient(process.env.MONGO_URI, {
   serverApi: {
     version: ServerApiVersion.v1,
     strict: true,
@@ -31,210 +34,194 @@ const client = new MongoClient(uri, {
 
 const db = client.db("sportnest_db");
 
+/* ---------------- Auth ---------------- */
 const auth = betterAuth({
   database: mongodbAdapter(db),
   baseURL: process.env.BETTER_AUTH_URL || "http://localhost:5000",
   secret: process.env.BETTER_AUTH_SECRET,
-  emailAndPassword: {
-    enabled: true
-  },
+
+  emailAndPassword: { enabled: true },
+
   socialProviders: {
     google: {
       clientId: process.env.GOOGLE_CLIENT_ID,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET
-    }
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    },
   },
+
   account: {
     accountLinking: {
       enabled: true,
-      trustedProviders: ["google", "email-password"]
-    }
+      trustedProviders: ["google", "email-password"],
+    },
   },
+
   trustedOrigins: [
     "http://localhost:5173",
-    "https://sportnest.emran.work"
+    "https://sportnest.emran.work",
   ],
+
   advanced: {
     cookie: {
-      sameSite: "none",
-      secure: true
-    }
-  }
+      sameSite:
+        process.env.NODE_ENV === "production" ? "none" : "lax",
+      secure: process.env.NODE_ENV === "production",
+    },
+  },
 });
 
 app.all("/api/auth/*splat", toNodeHandler(auth));
 
-app.use(express.json());
+/* ---------------- DB Connect ---------------- */
+let connected = false;
 
-// --- DB connection: connect once, reused across serverless invocations ---
-let isConnected = false;
 async function connectDB() {
-  if (isConnected) return;
-  try {
-    await client.connect();
-    isConnected = true;
-    console.log("Pinged your deployment. You successfully connected to MongoDB!");
-  } catch (error) {
-    console.error("MongoDB Connection Error:", error);
-  }
+  if (connected) return;
+  await client.connect();
+  connected = true;
+  console.log("MongoDB connected");
 }
-connectDB();
 
-const facilitiesCollection = db.collection("facilities");
-const bookingsCollection = db.collection("bookings");
+await connectDB();
 
-// --- Routes are registered synchronously at module load, independent of connectDB() ---
+/* ---------------- Collections ---------------- */
+const facilities = db.collection("facilities");
+const bookings = db.collection("bookings");
 
-app.get("/", (req, res) => {
-  res.send("SportNest Server is Running!");
-});
+/* ---------------- Routes ---------------- */
 
+app.get("/", (_, res) => res.send("SportNest Server Running"));
+
+/* ---- Facilities ---- */
 app.post("/facilities", async (req, res) => {
   try {
-    const data = req.body;
-    data.createdAt = new Date();
-    const result = await facilitiesCollection.insertOne(data);
+    const data = { ...req.body, createdAt: new Date() };
+    const result = await facilities.insertOne(data);
     res.status(201).send(result);
-  } catch (err) {
-    console.error("POST /facilities error:", err);
-    res.status(500).send({ message: "Failed to create facility" });
+  } catch {
+    res.status(500).send({ message: "Create failed" });
   }
 });
 
 app.get("/facilities", async (req, res) => {
   try {
     const { search, type, owner_email } = req.query;
-    let query = {};
+    const query = {};
 
-    if (search) {
-      query.name = { $regex: search, $options: "i" };
-    }
+    if (search) query.name = { $regex: search, $options: "i" };
+    if (type && type !== "all") query.facility_type = type;
+    if (owner_email) query.owner_email = owner_email;
 
-    if (type && type !== "all") {
-      query.facility_type = { $in: [type] };
-    }
-
-    if (owner_email) {
-      query.owner_email = owner_email;
-    }
-
-    const result = await facilitiesCollection.find(query).toArray();
-    res.send(result);
-  } catch (err) {
-    console.error("GET /facilities error:", err);
-    res.status(500).send({ message: "Failed to fetch facilities" });
+    res.send(await facilities.find(query).toArray());
+  } catch {
+    res.status(500).send({ message: "Fetch failed" });
   }
 });
 
 app.get("/facilities/:id", async (req, res) => {
   try {
     const id = req.params.id;
-    if (!ObjectId.isValid(id)) {
-      return res.status(400).send({ message: "Invalid facility id" });
-    }
-    const query = { _id: new ObjectId(id) };
-    const result = await facilitiesCollection.findOne(query);
-    if (!result) {
-      return res.status(404).send({ message: "Facility not found" });
-    }
-    res.send(result);
-  } catch (err) {
-    console.error("GET /facilities/:id error:", err);
-    res.status(500).send({ message: "Failed to fetch facility" });
+    if (!ObjectId.isValid(id))
+      return res.status(400).send({ message: "Invalid ID" });
+
+    const data = await facilities.findOne({ _id: new ObjectId(id) });
+    if (!data) return res.status(404).send({ message: "Not found" });
+
+    res.send(data);
+  } catch {
+    res.status(500).send({ message: "Fetch failed" });
   }
 });
 
 app.put("/facilities/:id", async (req, res) => {
   try {
     const id = req.params.id;
-    if (!ObjectId.isValid(id)) {
-      return res.status(400).send({ message: "Invalid facility id" });
-    }
-    const data = req.body;
+    if (!ObjectId.isValid(id))
+      return res.status(400).send({ message: "Invalid ID" });
 
-    const facility = await facilitiesCollection.findOne({ _id: new ObjectId(id) });
-    if (!facility) {
-      return res.status(404).send({ message: "Facility not found" });
-    }
-    if (facility.owner_email !== data.owner_email) {
-      return res.status(403).send({ message: "Forbidden: Not the owner" });
-    }
+    const existing = await facilities.findOne({ _id: new ObjectId(id) });
+    if (!existing) return res.status(404).send({ message: "Not found" });
 
-    const updateDoc = { $set: data };
-    const result = await facilitiesCollection.updateOne({ _id: new ObjectId(id) }, updateDoc);
+    if (existing.owner_email !== req.body.owner_email)
+      return res.status(403).send({ message: "Forbidden" });
+
+    const result = await facilities.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: req.body }
+    );
+
     res.send(result);
-  } catch (err) {
-    console.error("PUT /facilities/:id error:", err);
-    res.status(500).send({ message: "Failed to update facility" });
+  } catch {
+    res.status(500).send({ message: "Update failed" });
   }
 });
 
 app.delete("/facilities/:id", async (req, res) => {
   try {
     const id = req.params.id;
-    const { owner_email } = req.query;
-    if (!ObjectId.isValid(id)) {
-      return res.status(400).send({ message: "Invalid facility id" });
-    }
+    const email = req.query.owner_email;
 
-    const facility = await facilitiesCollection.findOne({ _id: new ObjectId(id) });
-    if (!facility) {
-      return res.status(404).send({ message: "Facility not found" });
-    }
-    if (facility.owner_email !== owner_email) {
-      return res.status(403).send({ message: "Forbidden: Not the owner" });
-    }
+    if (!ObjectId.isValid(id))
+      return res.status(400).send({ message: "Invalid ID" });
 
-    const result = await facilitiesCollection.deleteOne({ _id: new ObjectId(id) });
-    res.send(result);
-  } catch (err) {
-    console.error("DELETE /facilities/:id error:", err);
-    res.status(500).send({ message: "Failed to delete facility" });
+    const existing = await facilities.findOne({ _id: new ObjectId(id) });
+    if (!existing) return res.status(404).send({ message: "Not found" });
+
+    if (existing.owner_email !== email)
+      return res.status(403).send({ message: "Forbidden" });
+
+    res.send(await facilities.deleteOne({ _id: new ObjectId(id) }));
+  } catch {
+    res.status(500).send({ message: "Delete failed" });
   }
 });
 
+/* ---- Bookings ---- */
 app.post("/bookings", async (req, res) => {
   try {
-    const booking = req.body;
-    booking.createdAt = new Date();
-    const result = await bookingsCollection.insertOne(booking);
+    const result = await bookings.insertOne({
+      ...req.body,
+      createdAt: new Date(),
+    });
     res.status(201).send(result);
-  } catch (err) {
-    console.error("POST /bookings error:", err);
-    res.status(500).send({ message: "Failed to create booking" });
+  } catch {
+    res.status(500).send({ message: "Booking failed" });
   }
 });
 
 app.get("/bookings", async (req, res) => {
   try {
     const email = req.query.email;
-    if (!email) return res.status(400).send({ message: "Email parameter required" });
-    const query = { user_email: email };
-    const result = await bookingsCollection.find(query).toArray();
-    res.send(result);
-  } catch (err) {
-    console.error("GET /bookings error:", err);
-    res.status(500).send({ message: "Failed to fetch bookings" });
+    if (!email)
+      return res.status(400).send({ message: "Email required" });
+
+    res.send(
+      await bookings.find({ user_email: email }).toArray()
+    );
+  } catch {
+    res.status(500).send({ message: "Fetch failed" });
   }
 });
 
 app.delete("/bookings/:id", async (req, res) => {
   try {
     const id = req.params.id;
-    if (!ObjectId.isValid(id)) {
-      return res.status(400).send({ message: "Invalid booking id" });
-    }
-    const query = { _id: new ObjectId(id) };
-    const result = await bookingsCollection.deleteOne(query);
-    res.send(result);
-  } catch (err) {
-    console.error("DELETE /bookings/:id error:", err);
-    res.status(500).send({ message: "Failed to cancel booking" });
+    if (!ObjectId.isValid(id))
+      return res.status(400).send({ message: "Invalid ID" });
+
+    res.send(
+      await bookings.deleteOne({ _id: new ObjectId(id) })
+    );
+  } catch {
+    res.status(500).send({ message: "Delete failed" });
   }
 });
 
-app.listen(port, () => {
-  console.log(`Server is running on http://localhost:${port}`);
-});
+/* ---------------- Server ---------------- */
+if (process.env.NODE_ENV !== "production") {
+  app.listen(port, () =>
+    console.log(`http://localhost:${port}`)
+  );
+}
 
-module.exports = app;
+export default app;
