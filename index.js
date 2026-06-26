@@ -1,22 +1,24 @@
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const express = require("express");
 const cors = require("cors");
-const jwt = require("jsonwebtoken");
 const cookieParser = require("cookie-parser");
+const { betterAuth } = require("better-auth");
+const { mongodbAdapter } = require("better-auth/adapters/mongodb");
+const { toNodeHandler } = require("better-auth/node");
 require("dotenv").config();
-const port = process.env.PORT || 5000;
 
+const port = process.env.PORT || 5000;
 const app = express();
 
 app.use(cors({
-  origin: [process.env.CLIENT_URL || "http://localhost:5173"],
+  origin: [
+    "http://localhost:5173",
+    "https://sportnest.emran.work"
+  ],
   credentials: true
 }));
-app.use(express.json());
-app.use(cookieParser());
 
 const uri = process.env.MONGO_URI;
-
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
@@ -25,79 +27,126 @@ const client = new MongoClient(uri, {
   },
 });
 
-const verifyJWT = (req, res, next) => {
-  const token = req.cookies?.token;
-  if (!token) {
-    return res.status(401).send({ message: "Unauthorized access" });
-  }
-  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
-    if (err) {
-      return res.status(403).send({ message: "Forbidden access" });
+const db = client.db("sportnest_db");
+
+const auth = betterAuth({
+  database: mongodbAdapter(db),
+  emailAndPassword: {
+    enabled: true
+  },
+  trustedOrigins: [
+    "http://localhost:5173",
+    "https://sportnest.emran.work"
+  ],
+  advanced: {
+    cookie: {
+      sameSite: "none",
+      secure: true
     }
-    req.user = decoded;
-    next();
-  });
-};
+  }
+});
+
+app.all("/api/auth/*splat", toNodeHandler(auth));
+
+app.use(express.json());
+app.use(cookieParser());
 
 async function run() {
   try {
-    const database = client.db("sportnest_db");
-    const facilitiesCollection = database.collection("facilities");
-    const bookingsCollection = database.collection("bookings");
+    await client.connect();
 
-    app.post("/auth/jwt", async (req, res) => {
-      const user = req.body;
-      const token = jwt.sign(user, process.env.JWT_SECRET, { expiresIn: "7d" });
-      res.cookie("token", token, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: process.env.NODE_ENV === "production" ? "none" : "strict",
-      }).send({ success: true });
-    });
-
-    app.post("/auth/logout", async (req, res) => {
-      res.clearCookie("token", {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: process.env.NODE_ENV === "production" ? "none" : "strict",
-      }).send({ success: true });
-    });
+    const facilitiesCollection = db.collection("facilities");
+    const bookingsCollection = db.collection("bookings");
 
     app.post("/facilities", async (req, res) => {
-      const data = req.body;
-      const date = new Date();
-      data.createdAt = date;
-      const result = await facilitiesCollection.insertOne(data);
-      res.status(201).send(result);
+      try {
+        const data = req.body;
+        data.createdAt = new Date();
+        const result = await facilitiesCollection.insertOne(data);
+        res.status(201).send(result);
+      } catch (err) {
+        console.error("POST /facilities error:", err);
+        res.status(500).send({ message: "Failed to create facility" });
+      }
     });
 
     app.get("/facilities", async (req, res) => {
-      const { search, type } = req.query;
-      let query = {};
+      try {
+        const { search, type } = req.query;
+        let query = {};
 
-      if (search) {
-        query.name = { $regex: search, $options: "i" };
+        if (search) {
+          query.name = { $regex: search, $options: "i" };
+        }
+
+        if (type && type !== "all") {
+          query.facility_type = { $in: [type] };
+        }
+
+        const result = await facilitiesCollection.find(query).toArray();
+        res.send(result);
+      } catch (err) {
+        console.error("GET /facilities error:", err);
+        res.status(500).send({ message: "Failed to fetch facilities" });
       }
-
-      if (type && type !== "all") {
-        query.facility_type = { $in: [type] };
-      }
-
-      const result = await facilitiesCollection.find(query).toArray();
-      res.send(result);
     });
 
     app.get("/facilities/:id", async (req, res) => {
-      const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      const result = await facilitiesCollection.findOne(query);
-      res.send(result);
+      try {
+        const id = req.params.id;
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ message: "Invalid facility id" });
+        }
+        const query = { _id: new ObjectId(id) };
+        const result = await facilitiesCollection.findOne(query);
+        if (!result) {
+          return res.status(404).send({ message: "Facility not found" });
+        }
+        res.send(result);
+      } catch (err) {
+        console.error("GET /facilities/:id error:", err);
+        res.status(500).send({ message: "Failed to fetch facility" });
+      }
+    });
+
+    app.put("/facilities/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ message: "Invalid facility id" });
+        }
+        const data = req.body;
+        const query = { _id: new ObjectId(id) };
+        const updateDoc = { $set: data };
+        const result = await facilitiesCollection.updateOne(query, updateDoc);
+        res.send(result);
+      } catch (err) {
+        console.error("PUT /facilities/:id error:", err);
+        res.status(500).send({ message: "Failed to update facility" });
+      }
+    });
+
+    app.delete("/facilities/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ message: "Invalid facility id" });
+        }
+        const query = { _id: new ObjectId(id) };
+        const result = await facilitiesCollection.deleteOne(query);
+        res.send(result);
+      } catch (err) {
+        console.error("DELETE /facilities/:id error:", err);
+        res.status(500).send({ message: "Failed to delete facility" });
+      }
     });
 
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
-  } finally {
+  } catch (error) {
+    console.error("MongoDB Connection Error:", error);
   }
 }
+
 run().catch(console.dir);
 
 app.get("/", (req, res) => {
