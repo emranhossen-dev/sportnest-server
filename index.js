@@ -18,6 +18,8 @@ app.use(cors({
   credentials: true
 }));
 
+app.use(cookieParser());
+
 const uri = process.env.MONGO_URI;
 const client = new MongoClient(uri, {
   serverApi: {
@@ -31,8 +33,22 @@ const db = client.db("sportnest_db");
 
 const auth = betterAuth({
   database: mongodbAdapter(db),
+  baseURL: process.env.BETTER_AUTH_URL || "http://localhost:5000",
+  secret: process.env.BETTER_AUTH_SECRET,
   emailAndPassword: {
     enabled: true
+  },
+  socialProviders: {
+    google: {
+      clientId: process.env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET
+    }
+  },
+  account: {
+    accountLinking: {
+      enabled: true,
+      trustedProviders: ["google", "email-password"]
+    }
   },
   trustedOrigins: [
     "http://localhost:5173",
@@ -49,7 +65,6 @@ const auth = betterAuth({
 app.all("/api/auth/*splat", toNodeHandler(auth));
 
 app.use(express.json());
-app.use(cookieParser());
 
 async function run() {
   try {
