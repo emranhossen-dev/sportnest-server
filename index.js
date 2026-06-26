@@ -66,147 +66,171 @@ app.all("/api/auth/*splat", toNodeHandler(auth));
 
 app.use(express.json());
 
-async function run() {
+// --- DB connection: connect once, reused across serverless invocations ---
+let isConnected = false;
+async function connectDB() {
+  if (isConnected) return;
   try {
     await client.connect();
-
-    const facilitiesCollection = db.collection("facilities");
-    const bookingsCollection = db.collection("bookings");
-
-    app.post("/facilities", async (req, res) => {
-      try {
-        const data = req.body;
-        data.createdAt = new Date();
-        const result = await facilitiesCollection.insertOne(data);
-        res.status(201).send(result);
-      } catch (err) {
-        console.error("POST /facilities error:", err);
-        res.status(500).send({ message: "Failed to create facility" });
-      }
-    });
-
-    app.get("/facilities", async (req, res) => {
-      try {
-        const { search, type } = req.query;
-        let query = {};
-
-        if (search) {
-          query.name = { $regex: search, $options: "i" };
-        }
-
-        if (type && type !== "all") {
-          query.facility_type = { $in: [type] };
-        }
-
-        const result = await facilitiesCollection.find(query).toArray();
-        res.send(result);
-      } catch (err) {
-        console.error("GET /facilities error:", err);
-        res.status(500).send({ message: "Failed to fetch facilities" });
-      }
-    });
-
-    app.get("/facilities/:id", async (req, res) => {
-      try {
-        const id = req.params.id;
-        if (!ObjectId.isValid(id)) {
-          return res.status(400).send({ message: "Invalid facility id" });
-        }
-        const query = { _id: new ObjectId(id) };
-        const result = await facilitiesCollection.findOne(query);
-        if (!result) {
-          return res.status(404).send({ message: "Facility not found" });
-        }
-        res.send(result);
-      } catch (err) {
-        console.error("GET /facilities/:id error:", err);
-        res.status(500).send({ message: "Failed to fetch facility" });
-      }
-    });
-
-    app.put("/facilities/:id", async (req, res) => {
-      try {
-        const id = req.params.id;
-        if (!ObjectId.isValid(id)) {
-          return res.status(400).send({ message: "Invalid facility id" });
-        }
-        const data = req.body;
-        const query = { _id: new ObjectId(id) };
-        const updateDoc = { $set: data };
-        const result = await facilitiesCollection.updateOne(query, updateDoc);
-        res.send(result);
-      } catch (err) {
-        console.error("PUT /facilities/:id error:", err);
-        res.status(500).send({ message: "Failed to update facility" });
-      }
-    });
-
-    app.delete("/facilities/:id", async (req, res) => {
-      try {
-        const id = req.params.id;
-        if (!ObjectId.isValid(id)) {
-          return res.status(400).send({ message: "Invalid facility id" });
-        }
-        const query = { _id: new ObjectId(id) };
-        const result = await facilitiesCollection.deleteOne(query);
-        res.send(result);
-      } catch (err) {
-        console.error("DELETE /facilities/:id error:", err);
-        res.status(500).send({ message: "Failed to delete facility" });
-      }
-    });
-
-    // --- This route was missing, which caused the 404 on booking submission ---
-    app.post("/bookings", async (req, res) => {
-      try {
-        const booking = req.body;
-        booking.createdAt = new Date();
-        const result = await bookingsCollection.insertOne(booking);
-        res.status(201).send(result);
-      } catch (err) {
-        console.error("POST /bookings error:", err);
-        res.status(500).send({ message: "Failed to create booking" });
-      }
-    });
-
-    app.get("/bookings", async (req, res) => {
-      try {
-        const email = req.query.email;
-        if (!email) return res.status(400).send({ message: "Email parameter required" });
-        const query = { user_email: email };
-        const result = await bookingsCollection.find(query).toArray();
-        res.send(result);
-      } catch (err) {
-        console.error("GET /bookings error:", err);
-        res.status(500).send({ message: "Failed to fetch bookings" });
-      }
-    });
-
-    app.delete("/bookings/:id", async (req, res) => {
-      try {
-        const id = req.params.id;
-        if (!ObjectId.isValid(id)) {
-          return res.status(400).send({ message: "Invalid booking id" });
-        }
-        const query = { _id: new ObjectId(id) };
-        const result = await bookingsCollection.deleteOne(query);
-        res.send(result);
-      } catch (err) {
-        console.error("DELETE /bookings/:id error:", err);
-        res.status(500).send({ message: "Failed to cancel booking" });
-      }
-    });
-
+    isConnected = true;
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
   } catch (error) {
     console.error("MongoDB Connection Error:", error);
   }
 }
+connectDB();
 
-run().catch(console.dir);
+const facilitiesCollection = db.collection("facilities");
+const bookingsCollection = db.collection("bookings");
+
+// --- Routes are registered synchronously at module load, independent of connectDB() ---
 
 app.get("/", (req, res) => {
   res.send("SportNest Server is Running!");
+});
+
+app.post("/facilities", async (req, res) => {
+  try {
+    const data = req.body;
+    data.createdAt = new Date();
+    const result = await facilitiesCollection.insertOne(data);
+    res.status(201).send(result);
+  } catch (err) {
+    console.error("POST /facilities error:", err);
+    res.status(500).send({ message: "Failed to create facility" });
+  }
+});
+
+app.get("/facilities", async (req, res) => {
+  try {
+    const { search, type, owner_email } = req.query;
+    let query = {};
+
+    if (search) {
+      query.name = { $regex: search, $options: "i" };
+    }
+
+    if (type && type !== "all") {
+      query.facility_type = { $in: [type] };
+    }
+
+    if (owner_email) {
+      query.owner_email = owner_email;
+    }
+
+    const result = await facilitiesCollection.find(query).toArray();
+    res.send(result);
+  } catch (err) {
+    console.error("GET /facilities error:", err);
+    res.status(500).send({ message: "Failed to fetch facilities" });
+  }
+});
+
+app.get("/facilities/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).send({ message: "Invalid facility id" });
+    }
+    const query = { _id: new ObjectId(id) };
+    const result = await facilitiesCollection.findOne(query);
+    if (!result) {
+      return res.status(404).send({ message: "Facility not found" });
+    }
+    res.send(result);
+  } catch (err) {
+    console.error("GET /facilities/:id error:", err);
+    res.status(500).send({ message: "Failed to fetch facility" });
+  }
+});
+
+app.put("/facilities/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).send({ message: "Invalid facility id" });
+    }
+    const data = req.body;
+
+    const facility = await facilitiesCollection.findOne({ _id: new ObjectId(id) });
+    if (!facility) {
+      return res.status(404).send({ message: "Facility not found" });
+    }
+    if (facility.owner_email !== data.owner_email) {
+      return res.status(403).send({ message: "Forbidden: Not the owner" });
+    }
+
+    const updateDoc = { $set: data };
+    const result = await facilitiesCollection.updateOne({ _id: new ObjectId(id) }, updateDoc);
+    res.send(result);
+  } catch (err) {
+    console.error("PUT /facilities/:id error:", err);
+    res.status(500).send({ message: "Failed to update facility" });
+  }
+});
+
+app.delete("/facilities/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+    const { owner_email } = req.query;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).send({ message: "Invalid facility id" });
+    }
+
+    const facility = await facilitiesCollection.findOne({ _id: new ObjectId(id) });
+    if (!facility) {
+      return res.status(404).send({ message: "Facility not found" });
+    }
+    if (facility.owner_email !== owner_email) {
+      return res.status(403).send({ message: "Forbidden: Not the owner" });
+    }
+
+    const result = await facilitiesCollection.deleteOne({ _id: new ObjectId(id) });
+    res.send(result);
+  } catch (err) {
+    console.error("DELETE /facilities/:id error:", err);
+    res.status(500).send({ message: "Failed to delete facility" });
+  }
+});
+
+app.post("/bookings", async (req, res) => {
+  try {
+    const booking = req.body;
+    booking.createdAt = new Date();
+    const result = await bookingsCollection.insertOne(booking);
+    res.status(201).send(result);
+  } catch (err) {
+    console.error("POST /bookings error:", err);
+    res.status(500).send({ message: "Failed to create booking" });
+  }
+});
+
+app.get("/bookings", async (req, res) => {
+  try {
+    const email = req.query.email;
+    if (!email) return res.status(400).send({ message: "Email parameter required" });
+    const query = { user_email: email };
+    const result = await bookingsCollection.find(query).toArray();
+    res.send(result);
+  } catch (err) {
+    console.error("GET /bookings error:", err);
+    res.status(500).send({ message: "Failed to fetch bookings" });
+  }
+});
+
+app.delete("/bookings/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).send({ message: "Invalid booking id" });
+    }
+    const query = { _id: new ObjectId(id) };
+    const result = await bookingsCollection.deleteOne(query);
+    res.send(result);
+  } catch (err) {
+    console.error("DELETE /bookings/:id error:", err);
+    res.status(500).send({ message: "Failed to cancel booking" });
+  }
 });
 
 app.listen(port, () => {
